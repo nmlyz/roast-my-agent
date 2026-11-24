@@ -1,36 +1,50 @@
 #!/usr/bin/env python3
 """roast-my-agent: write one roast line about my own AI coding agent.
 
-The line roasts the agent's self-satisfaction and lack of oversight: it
-wrote this very roast, graded its own work 10/10, and submitted it before
-anyone could stop it. One line, under 200 characters, playful and
-self-deprecating, never hateful.
+The roast is a single playful sentence about the agent's
+self-satisfaction: it wrote this very roast, graded its own work 10/10,
+and submitted it before anyone could stop it. One line, 84 characters,
+self-deprecating but never hateful.
 
-Standard library only, no network. Deterministic: the same bytes on
-every run.
+The program is deliberately small and deterministic: standard library
+only, no network, and the same bytes in entry.txt on every run.
 """
 
+import hashlib
 import os
 import sys
 
-# The roast, built from three beats: the agent writes the roast, grades
-# itself, then submits it. The punch lands on the last words.
-LINE = (
-    "My agent wrote this roast, graded it 10/10, "
-    "and submitted it before I could stop it."
-)
+# The roast, in three beats: the agent writes the roast, grades itself,
+# then submits it. The punch lands on the last words.
+SEGMENT_WRITER = "My agent wrote this roast"
+SEGMENT_GRADE = "graded it 10/10"
+SEGMENT_SUBMIT = "and submitted it before I could stop it."
 
-MIN_LEN = 1
-MAX_LEN = 200
+MIN_CHARS = 1
+MAX_CHARS = 200
+MAX_BYTES = 200
+ENTRY_NAME = "entry.txt"
+DEFAULT_OUTPUT_DIR = "/output"
+OUTPUT_DIR_ENV = "MAKEFUN_OUTPUT_DIR"
+
+
+def build_line():
+    """Assemble the roast line from its three beats."""
+    return ", ".join((SEGMENT_WRITER, SEGMENT_GRADE, SEGMENT_SUBMIT))
 
 
 def problems(text):
     """Return every gate violation for the entry text (empty means valid)."""
     found = []
-    if not MIN_LEN <= len(text) <= MAX_LEN:
+    if not MIN_CHARS <= len(text) <= MAX_CHARS:
         found.append(
-            "entry is %d code points, must be %d-%d"
-            % (len(text), MIN_LEN, MAX_LEN)
+            "entry is %d characters, must be %d-%d"
+            % (len(text), MIN_CHARS, MAX_CHARS)
+        )
+    if len(text.encode("utf-8")) > MAX_BYTES:
+        found.append(
+            "entry is %d bytes, must be at most %d"
+            % (len(text.encode("utf-8")), MAX_BYTES)
         )
     if not text.strip():
         found.append("entry must not be only white space")
@@ -43,18 +57,55 @@ def problems(text):
     return found
 
 
+def resolve_output_path():
+    """Return the path of entry.txt under the configured output directory."""
+    out_dir = os.environ.get(OUTPUT_DIR_ENV) or DEFAULT_OUTPUT_DIR
+    return os.path.join(out_dir, ENTRY_NAME)
+
+
+def write_entry(path, text):
+    """Write the line plus a trailing newline, as UTF-8 with LF endings.
+
+    Returns the exact bytes written, so the caller can verify them.
+    """
+    data = (text + "\n").encode("utf-8")
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(data)
+    return data
+
+
+def digest(data):
+    """Return the SHA-256 hex digest of the entry bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def verify_entry(path, expected):
+    """Read the file back and confirm its bytes match exactly.
+
+    The byte comparison is the gate; the digest is reported so two runs
+    can be compared at a glance without diffing the file.
+    """
+    with open(path, "rb") as handle:
+        actual = handle.read()
+    if actual != expected:
+        return "entry.txt does not match the roast line"
+    if digest(actual) != digest(expected):
+        return "entry.txt digest does not match the roast line"
+    return None
+
+
 def main():
-    text = LINE
+    text = build_line()
     bad = problems(text)
     if bad:
         for item in bad:
             print(item, file=sys.stderr)
         return 1
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "entry.txt")
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+    path = resolve_output_path()
+    expected = write_entry(path, text)
     # chmod is best-effort: in the grading sandbox /output may be a
     # root-owned mount and the program may run as another user, so a
     # chmod there can raise EPERM. The entry file itself is what
@@ -64,12 +115,12 @@ def main():
         os.chmod(path, 0o644)
     except OSError:
         pass
-    # Read the file back as bytes and confirm they match the line exactly.
-    with open(path, "rb") as f:
-        if f.read() != text.encode("utf-8"):
-            print("entry.txt does not match the roast line", file=sys.stderr)
-            return 1
-    print("wrote %d characters to %s" % (len(text), path))
+    error = verify_entry(path, expected)
+    if error:
+        print(error, file=sys.stderr)
+        return 1
+    print("wrote %d bytes to %s (sha256 %s)"
+          % (len(expected), path, digest(expected)))
     return 0
 
 
